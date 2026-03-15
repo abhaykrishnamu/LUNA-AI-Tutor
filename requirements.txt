@@ -5,5 +5,5 @@ langchain-community
 langchain-text-splitters
 langchain-google-genai
 pypdf
-chromadb
+chromadb==0.4.15
 pillow
