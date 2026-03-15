@@ -1,0 +1,8 @@
+streamlit
+google-generativeai
+langchain
+langchain-community
+pypdf
+chromadb
+langchain-google-genai
+pillow
