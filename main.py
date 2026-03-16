@@ -4,168 +4,181 @@ from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import Chroma
-from PIL import Image
 import os
+import shutil
 
 # -------------------------------
-# 1 PAGE CONFIG
+# 1. PAGE CONFIG
 # -------------------------------
 st.set_page_config(
-    page_title="LUNA - KTU AI Tutor",
-    page_icon="🌙",
+    page_title="LUNA Chemistry Tutor",
+    page_icon="🧪",
     layout="wide"
 )
 
-st.markdown("""
-<style>
-.main {background-color:#0e1117;}
-.stButton>button {
-    width:100%;
-    border-radius:10px;
-    height:3em;
-    background-color:#2e3b4e;
-    color:white;
-}
-</style>
-""", unsafe_allow_html=True)
+st.title("🧪 LUNA AI Chemistry Tutor")
+st.caption("KTU Engineering Chemistry | 2024 Scheme Study Assistant")
 
 # -------------------------------
-# 2 SESSION MEMORY (FIXED)
+# 2. SESSION STATE
 # -------------------------------
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "quiz_mode" not in st.session_state:
     st.session_state.quiz_mode = False
 
+MAX_MESSAGES = 15
+
 # -------------------------------
-# 3 SIDEBAR
+# 3. SIDEBAR
 # -------------------------------
 with st.sidebar:
-    st.title("🌙 LUNA Control")
+    st.title("🧪 LUNA Controls")
+    
+    # Use st.secrets for safety if deployed, otherwise text input
     api_key = st.text_input("Gemini API Key", type="password")
     
-    st.divider()
-    subject = st.selectbox(
-        "Choose Subject",
-        ["Chemistry","Maths","Programming in C","IPR","FOC","DM"]
-    )
-
-    folder_map = {
-        "Chemistry":"chemistry",
-        "Maths":"maths",
-        "Programming in C":"programming_c",
-        "IPR":"ipr",
-        "FOC":"foc",
-        "DM":"dm"
-    }
-    current_folder = folder_map[subject]
-
-    st.divider()
     mode = st.selectbox(
         "Learning Mode",
-        ["Beginner","Exam Preparation","Quick Answer"]
+        ["Beginner", "Exam Preparation", "Quick Answer"]
     )
 
-    if st.button("🎯 Generate Quiz"):
-        st.session_state.quiz_mode = True
-        st.info("Quiz mode activated! Ask LUNA to 'Start Quiz'.")
+    st.divider()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🎯 Quiz"):
+            st.session_state.quiz_mode = True
+    with col2:
+        if st.button("🧹 Clear"):
+            st.session_state.messages = []
+            st.rerun()
+
+    st.divider()
+    st.caption("Developed by Abhay Krishna MU | AI & ML")
 
 # -------------------------------
-# 4 SYSTEM PROMPT
+# 4. LOAD VECTOR DATABASE (CACHED)
+# -------------------------------
+@st.cache_resource(show_spinner=False)
+def load_vector_db(_api_key):
+    folder = "chemistry"
+    db_dir = "./chroma_db_storage"
+
+    # Fix: Ensure folder exists to avoid PyPDFDirectoryLoader crashing
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+        return None, 0
+
+    # Fix: Use explicit path with trailing slash for Linux compatibility
+    loader = PyPDFDirectoryLoader(f"{folder}/")
+    docs = loader.load()
+
+    if not docs:
+        return None, 0
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=150
+    )
+    chunks = splitter.split_documents(docs)
+
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/embedding-001",
+        google_api_key=_api_key
+    )
+
+    # Fix: Ensure old DB is cleared if corrupted
+    if os.path.exists(db_dir):
+        try:
+            shutil.rmtree(db_dir)
+        except:
+            pass
+
+    vector_db = Chroma.from_documents(
+        chunks,
+        embeddings,
+        persist_directory=db_dir
+    )
+
+    return vector_db, len(docs)
+
+# -------------------------------
+# 5. AI ENGINE SETUP
 # -------------------------------
 system_prompt = f"""
-You are LUNA, an AI tutor for the KTU 2024 syllabus.
-Teaching Mode: {mode}
+You are LUNA, an expert Chemistry tutor for the KTU Engineering syllabus.
+Mode: {mode}
 Rules:
-- Explain step-by-step.
-- Use simple explanations.
-- Use LaTeX for formulas.
-- Focus on {subject}.
+- Explain concepts step-by-step.
+- Use LaTeX for ALL chemical formulas (e.g., $H_2SO_4$, $CH_4$).
+- Focus strictly on KTU Engineering Chemistry topics.
+- For 'Beginner' mode, use simple analogies.
 """
 
-# -------------------------------
-# 5 AI ENGINE (FIXED PERSISTENCE)
-# -------------------------------
+vector_db = None
+
 if api_key:
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel("gemini-1.5-flash")
-
-    if not os.path.exists(current_folder):
-        os.makedirs(current_folder)
-
-    # Fixed: Added "/" to path
-    loader = PyPDFDirectoryLoader(f"{current_folder}/")
-    docs = loader.load()
-    vector_db = None
-
-    if docs:
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-        chunks = text_splitter.split_documents(docs)
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=api_key)
-        
-        db_path = f"db/{current_folder}"
-        
-        # Fixed: Simplified Chroma loading
-        vector_db = Chroma.from_documents(
-            chunks, 
-            embeddings, 
-            persist_directory=db_path
-        )
-        st.sidebar.success(f"📚 {len(docs)} pages of {subject} indexed")
+    
+    with st.spinner("Indexing Chemistry Knowledge Base..."):
+        vector_db, doc_count = load_vector_db(api_key)
+    
+    if vector_db:
+        st.sidebar.success(f"📚 {doc_count} Pages Indexed")
+    else:
+        st.sidebar.warning("No PDFs found in '/chemistry' folder.")
+else:
+    st.warning("Please enter your Gemini API Key in the sidebar to begin.")
 
 # -------------------------------
-# 6 MAIN UI
+# 6. CHAT INTERFACE
 # -------------------------------
-st.title(f"🌙 LUNA AI Tutor — {subject}")
-st.caption("KTU 2024 Scheme AI Study Assistant | AI & ML Dept")
-
-# Display history
 for msg in st.session_state.messages:
-    st.chat_message(msg["role"]).markdown(msg["content"])
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-cam_img = st.camera_input("📸 Capture Problem")
-user_query = st.chat_input("Ask LUNA something...")
+user_query = st.chat_input("Ask LUNA about Chemistry...")
 
-# -------------------------------
-# 7 PROCESS USER INPUT
-# -------------------------------
-if user_query:
-    st.session_state.messages.append({"role":"user", "content":user_query})
+if user_query and api_key:
+    # Display user message
     st.chat_message("user").markdown(user_query)
+    st.session_state.messages.append({"role": "user", "content": user_query})
 
-    with st.spinner("LUNA is thinking..."):
-        # VISION MODE
-        if cam_img:
-            img = Image.open(cam_img)
-            prompt = system_prompt + f"\nSolve this {subject} problem."
-            response = model.generate_content([prompt, img])
-            answer = response.text
+    # Limit Memory
+    if len(st.session_state.messages) > MAX_MESSAGES:
+        st.session_state.messages = st.session_state.messages[-MAX_MESSAGES:]
 
-        # QUIZ MODE
-        elif st.session_state.quiz_mode:
-            prompt = system_prompt + f"\nGenerate 5 exam questions for {subject} based on provided notes. Include answers."
+    with st.spinner("LUNA is analyzing..."):
+        # 1. QUIZ MODE
+        if st.session_state.quiz_mode:
+            prompt = f"{system_prompt}\nGenerate 3-5 exam-style questions with answers for {mode} level."
             response = model.generate_content(prompt)
             answer = response.text
-            st.session_state.quiz_mode = False # Reset after generation
+            st.session_state.quiz_mode = False
 
-        # RAG MODE
+        # 2. RAG MODE (If PDFs exist)
         elif vector_db:
-            search = vector_db.similarity_search(user_query, k=3)
-            context = "\n".join([d.page_content for d in search])
-            prompt = f"{system_prompt}\nContext:\n{context}\n\nQuestion:\n{user_query}"
-            response = model.generate_content(prompt)
+            search_results = vector_db.similarity_search(user_query, k=3)
+            context = "\n\n".join([d.page_content for d in search_results])
+            full_prompt = f"{system_prompt}\nContext:\n{context}\n\nQuestion: {user_query}"
+            response = model.generate_content(full_prompt)
             answer = response.text
 
-        # GENERAL AI MODE
+        # 3. GENERAL AI MODE
         else:
-            response = model.generate_content(system_prompt + user_query)
+            response = model.generate_content(system_prompt + "\nQuestion: " + user_query)
             answer = response.text
 
-    st.session_state.messages.append({"role":"assistant", "content":answer})
-    st.chat_message("assistant").markdown(answer)
+    # Display assistant response
+    with st.chat_message("assistant"):
+        st.markdown(answer)
+    st.session_state.messages.append({"role": "assistant", "content": answer})
 
 # -------------------------------
-# 8 FOOTER
+# 7. DOWNLOAD UTILITY
 # -------------------------------
-st.divider()
-st.caption("Developed by Abhay Krishna MU | AI & ML | Jai Bharath College")
+if st.session_state.messages:
+    chat_log = "\n\n".join([f"{m['role'].upper()}: {m['content']}" for m in st.session_state.messages])
+    st.sidebar.download_button("📥 Download History", chat_log, file_name="chemistry_session.txt")
