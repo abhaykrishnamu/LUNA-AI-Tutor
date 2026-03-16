@@ -56,7 +56,7 @@ if "messages" not in st.session_state:
 def load_knowledge_base(_api_key):
 
 
-folder = "programming_c/programming_c"
+ folder = "programming_c/programming_c"
     db_dir = "chroma_db_c"
 
     if not os.path.exists(folder):
