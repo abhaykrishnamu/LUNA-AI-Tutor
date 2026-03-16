@@ -4,13 +4,13 @@ try:
     import sys
     sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 except ImportError:
-    # This handles local Windows development where pysqlite3 isn't needed
     pass 
 
 import streamlit as st
 import google.generativeai as genai
 from langchain_community.document_loaders import PyPDFDirectoryLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+# FIXED IMPORT: Moved to the new specialized package
+from langchain_text_splitters import RecursiveCharacterTextSplitter 
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import Chroma
 import os
@@ -23,20 +23,10 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom KTU Styling
-st.markdown("""
-<style>
-    .main { background-color: #0e1117; }
-    .stChatFloatingInputContainer { background-color: #0e1117; }
-</style>
-""", unsafe_allow_html=True)
-
 st.title("💻 LUNA AI: C Programming Tutor")
 st.caption("KTU Engineering Specialist | AI & ML Dept | Jai Bharath College")
 
 # --- 3. AUTOMATIC API KEY (STREAMLIT SECRETS) ---
-# To use this, go to Streamlit Cloud > Settings > Secrets and add:
-# GOOGLE_API_KEY = "your_key_here"
 if "GOOGLE_API_KEY" in st.secrets:
     api_key = st.secrets["GOOGLE_API_KEY"]
 else:
@@ -57,23 +47,23 @@ def load_knowledge_base(_key):
         os.makedirs(folder)
         return None, 0
 
+    # Explicit path handling for Linux servers
     loader = PyPDFDirectoryLoader(f"{folder}/")
     docs = loader.load()
     
     if not docs:
         return None, 0
 
-    # Chunking notes for the AI
+    # Chunking notes using the updated splitter
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
     chunks = splitter.split_documents(docs)
 
-    # Embeddings setup
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/embedding-001", 
         google_api_key=_key
     )
 
-    # Clean old DB to save RAM (Important for 8GB systems)
+    # Clean old DB to prevent 'Folder Locked' errors
     if os.path.exists(db_dir):
         try: shutil.rmtree(db_dir)
         except: pass
@@ -98,7 +88,7 @@ with st.sidebar:
     if vector_db:
         st.success(f"📚 {doc_count} C-Notes Pages Loaded")
     else:
-        st.warning("No PDFs found in '/programming_c'. Using general AI knowledge.")
+        st.warning("No PDFs found in '/programming_c'.")
     
     if st.button("🧹 Clear Chat History"):
         st.session_state.messages = []
@@ -111,21 +101,19 @@ with st.sidebar:
 for msg in st.session_state.messages:
     st.chat_message(msg["role"]).markdown(msg["content"])
 
-user_query = st.chat_input("Ask a C question (e.g., Explain pointers)")
+user_query = st.chat_input("Ask a C question...")
 
 if user_query:
     st.session_state.messages.append({"role": "user", "content": user_query})
     st.chat_message("user").markdown(user_query)
 
     with st.spinner("LUNA is thinking..."):
-        # System instructions
         system_prompt = """You are LUNA, an expert C tutor for KTU students. 
         Always use C code blocks for code snippets. 
         Explain logic step-by-step. 
         Use LaTeX for mathematical notation."""
         
         if vector_db:
-            # Search notes for context
             docs = vector_db.similarity_search(user_query, k=3)
             context = "\n\n".join([d.page_content for d in docs])
             full_prompt = f"{system_prompt}\n\nContext from Syllabus Notes:\n{context}\n\nQuestion: {user_query}"
