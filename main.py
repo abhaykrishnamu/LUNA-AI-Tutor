@@ -9,7 +9,6 @@ except ImportError:
 import streamlit as st
 import google.generativeai as genai
 from langchain_community.document_loaders import PyPDFDirectoryLoader
-# FIXED IMPORT: Moved to the new specialized package
 from langchain_text_splitters import RecursiveCharacterTextSplitter 
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import Chroma
@@ -24,7 +23,7 @@ st.set_page_config(
 )
 
 st.title("💻 LUNA AI: C Programming Tutor")
-st.caption("KTU Engineering Specialist | AI & ML Dept | Jai Bharath College")
+st.caption("KTU Engineering student | AI & ML Dept | Jai Bharath College")
 
 # --- 3. AUTOMATIC API KEY (STREAMLIT SECRETS) ---
 if "GOOGLE_API_KEY" in st.secrets:
@@ -47,30 +46,30 @@ def load_knowledge_base(_key):
         os.makedirs(folder)
         return None, 0
 
-    # Explicit path handling for Linux servers
     loader = PyPDFDirectoryLoader(f"{folder}/")
     docs = loader.load()
     
     if not docs:
         return None, 0
 
-    # Chunking notes using the updated splitter
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
     chunks = splitter.split_documents(docs)
 
+    # UPDATED: Use the latest stable model and specified task_type
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001", 
-        google_api_key=_key
+        model="models/text-embedding-004", 
+        google_api_key=_key,
+        task_type="retrieval_document"
     )
 
-    # Clean old DB to prevent 'Folder Locked' errors
     if os.path.exists(db_dir):
         try: shutil.rmtree(db_dir)
         except: pass
 
+    # UPDATED: Use the singular 'embedding' keyword
     vector_db = Chroma.from_documents(
-        chunks, 
-        embeddings, 
+        documents=chunks, 
+        embedding=embeddings, 
         persist_directory=db_dir
     )
     return vector_db, len(docs)
@@ -101,7 +100,7 @@ with st.sidebar:
 for msg in st.session_state.messages:
     st.chat_message(msg["role"]).markdown(msg["content"])
 
-user_query = st.chat_input("Ask a C question...")
+user_query = st.chat_input("Ask a C question (e.g., Explain pointers)")
 
 if user_query:
     st.session_state.messages.append({"role": "user", "content": user_query})
@@ -111,7 +110,7 @@ if user_query:
         system_prompt = """You are LUNA, an expert C tutor for KTU students. 
         Always use C code blocks for code snippets. 
         Explain logic step-by-step. 
-        Use LaTeX for mathematical notation."""
+        Use LaTeX for mathematical notation ($O(n)$)."""
         
         if vector_db:
             docs = vector_db.similarity_search(user_query, k=3)
