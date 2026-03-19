@@ -8,7 +8,7 @@ except ImportError:
 
 import streamlit as st
 import google.generativeai as genai
-from langchain_community.document_loaders import PyPDFDirectoryLoader
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import Chroma
@@ -27,62 +27,80 @@ api_key = st.secrets["GOOGLE_API_KEY"]
 genai.configure(api_key=api_key)
 model = genai.GenerativeModel("gemini-1.5-flash")
 
-# --- 4. LOAD KNOWLEDGE BASE (ROOT FOLDER) ---
+# --- 4. LOAD KNOWLEDGE BASE (SAFE ROOT FOLDER FIX) ---
 @st.cache_resource(show_spinner=False)
 def load_knowledge_base(_api_key):
-    # "." tells Python to look in the same folder where main.py is located
-    folder = "." 
     db_dir = "./chroma_db_c"
-
-    # Load only PDF files from the root directory
-    loader = PyPDFDirectoryLoader(folder)
-    docs = loader.load()
-
-    if not docs:
+    
+    # 1. Safely find ONLY .pdf files in the main folder
+    pdf_files = [f for f in os.listdir(".") if f.lower().endswith('.pdf')]
+    
+    if not pdf_files:
         return None, 0
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-    chunks = splitter.split_documents(docs)
+    # 2. Load documents one by one to catch corrupted files
+    all_docs = []
+    for pdf in pdf_files:
+        try:
+            loader = PyPDFLoader(pdf)
+            all_docs.extend(loader.load())
+        except Exception:
+            pass # Silently skip any broken PDFs so the app doesn't crash
 
+    # 3. Double check that we actually extracted text
+    if not all_docs:
+        return None, 0
+
+    # 4. Split text into chunks
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    chunks = splitter.split_documents(all_docs)
+
+    # Prevent crashing if chunks end up empty
+    if not chunks:
+        return None, 0
+
+    # 5. Create Embeddings
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/text-embedding-004",
         google_api_key=_api_key,
         task_type="retrieval_document"
     )
 
+    # 6. Clear old database safely
     if os.path.exists(db_dir):
         try: shutil.rmtree(db_dir)
         except: pass
 
+    # 7. Build Vector Database
     vector_db = Chroma.from_documents(
         documents=chunks,
         embedding=embeddings,
         persist_directory=db_dir
     )
 
-    return vector_db, len(docs)
+    return vector_db, len(pdf_files)
 
 # --- 5. UI SETUP ---
 st.title("🌙 LUNA AI: C Programming Tutor")
 st.caption("KTU Engineering | AI & ML Department | Jai Bharath College")
 
-with st.spinner("LUNA is reading your KTU notes from the main folder..."):
+with st.spinner("LUNA is safely reading your KTU notes..."):
     vector_db, doc_count = load_knowledge_base(api_key)
 
 # --- 6. SIDEBAR ---
 with st.sidebar:
     st.header("🌙 LUNA Settings")
     if vector_db:
-        st.success(f"📚 {doc_count} pages of C notes loaded")
+        st.success(f"📚 {doc_count} PDF(s) loaded successfully.")
     else:
-        st.warning("No PDFs found in the root folder!")
+        st.warning("No valid PDFs found in the main folder. Please upload them to GitHub.")
 
     if st.button("🧹 Clear Chat History"):
         st.session_state.messages = []
         st.rerun()
 
     st.divider()
-    st.caption(f"Developed by Abhay Krishna MU")
+    st.caption("Developed by Abhay Krishna MU")
 
 # --- 7. CHAT LOGIC ---
 if "messages" not in st.session_state:
@@ -99,17 +117,22 @@ if user_query:
     st.chat_message("user").markdown(user_query)
 
     with st.spinner("LUNA is thinking..."):
-        system_prompt = "You are LUNA, an expert C tutor for KTU students. Use C code blocks and LaTeX."
+        system_prompt = "You are LUNA, an expert C tutor for KTU students. Use C code blocks for code snippets."
         
         if vector_db:
+            # Search the PDFs
             docs = vector_db.similarity_search(user_query, k=3)
             context = "\n\n".join([d.page_content for d in docs])
             full_prompt = f"{system_prompt}\n\nContext from Notes:\n{context}\n\nQuestion: {user_query}"
         else:
+            # Answer without PDFs if they aren't loaded yet
             full_prompt = f"{system_prompt}\n\nQuestion: {user_query}"
             
-        response = model.generate_content(full_prompt)
-        answer = response.text
+        try:
+            response = model.generate_content(full_prompt)
+            answer = response.text
+        except Exception as e:
+            answer = f"Oops, API Error: {e}"
 
     with st.chat_message("assistant"):
         st.markdown(answer)
