@@ -14,10 +14,10 @@ try:
 except ImportError:
     pass
 
-# --- 3. ADDITIONAL LIBRARIES ---
+# --- 3. LIBRARIES ---
 import google.generativeai as genai
 from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter   # ✅ FIXED
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import Chroma
 
@@ -30,38 +30,38 @@ st.set_page_config(
 
 # --- 5. API SETUP ---
 if "GOOGLE_API_KEY" not in st.secrets:
-    st.error("❌ API key not found. Add GOOGLE_API_KEY in Streamlit Secrets.")
+    st.error("❌ Add GOOGLE_API_KEY in Streamlit Secrets")
     st.stop()
 
 api_key = st.secrets["GOOGLE_API_KEY"]
 genai.configure(api_key=api_key)
 model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
-# --- 6. OCR FUNCTION (SAFE VERSION) ---
+# --- 6. OCR FUNCTION ---
 def perform_ocr_on_pdf(pdf_path):
     try:
         if not hasattr(genai, "upload_file"):
             return ""
 
-        sample_file = genai.upload_file(path=pdf_path)
+        file = genai.upload_file(path=pdf_path)
 
         max_wait = 30
         waited = 0
 
-        while sample_file.state.name == "PROCESSING" and waited < max_wait:
+        while file.state.name == "PROCESSING" and waited < max_wait:
             time.sleep(2)
             waited += 2
-            sample_file = genai.get_file(sample_file.name)
+            file = genai.get_file(file.name)
 
         if waited >= max_wait:
             return ""
 
         response = model.generate_content([
-            sample_file,
-            "Extract all readable text clearly. Preserve code formatting."
+            file,
+            "Extract all readable text clearly. Preserve code."
         ])
 
-        genai.delete_file(sample_file.name)
+        genai.delete_file(file.name)
 
         return getattr(response, "text", "")
 
@@ -86,13 +86,13 @@ def load_knowledge_base(_api_key):
             loader = PyPDFLoader(os.path.join(".", pdf))
             docs = loader.load()
 
-            text_content = " ".join([d.page_content for d in docs])
+            text = " ".join([d.page_content for d in docs])
 
-            if len(text_content.strip()) < 100:
+            if len(text.strip()) < 100:
                 with st.spinner(f"🔍 OCR reading {pdf}..."):
-                    text_content = perform_ocr_on_pdf(pdf)
+                    text = perform_ocr_on_pdf(pdf)
 
-            all_text += text_content + "\n\n"
+            all_text += text + "\n\n"
 
         except Exception as e:
             st.warning(f"Error reading {pdf}: {e}")
@@ -105,6 +105,7 @@ def load_knowledge_base(_api_key):
         chunk_size=1200,
         chunk_overlap=200
     )
+
     chunks = splitter.split_text(all_text)
 
     embeddings = GoogleGenerativeAIEmbeddings(
@@ -130,9 +131,9 @@ def load_knowledge_base(_api_key):
 
 # --- 8. UI ---
 st.title("🌙 LUNA AI: C Programming Tutor")
-st.caption("KTU Engineering | AI & ML Department | Jai Bharath College")
+st.caption("KTU Engineering | AI & ML Department")
 
-with st.spinner("📚 LUNA is analyzing your notes..."):
+with st.spinner("📚 LUNA analyzing notes..."):
     vector_db, doc_count = load_knowledge_base(api_key)
 
 # --- SIDEBAR ---
@@ -149,7 +150,7 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.caption("Developed by Abhay Krishna MU")
+    st.caption("Developed by Abhay 🚀")
 
 # --- 9. CHAT SYSTEM ---
 if "messages" not in st.session_state:
@@ -157,8 +158,8 @@ if "messages" not in st.session_state:
 
     intros = [
         "👋 Welcome! I can read your notes—even scanned ones.",
-        "🌙 LUNA ready. Ask anything about C programming.",
-        "🚀 Let's study C with your KTU notes!"
+        "🌙 LUNA ready. Ask me anything about C programming.",
+        "🚀 Let's master C together!"
     ]
 
     st.session_state.messages.append({
@@ -166,7 +167,7 @@ if "messages" not in st.session_state:
         "content": random.choice(intros)
     })
 
-# Display chat
+# Show chat
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -183,7 +184,7 @@ if user_query:
     with st.spinner("🤖 LUNA thinking..."):
 
         system_prompt = (
-            "You are LUNA, a smart and friendly C programming tutor. "
+            "You are LUNA, a smart C programming tutor. "
             "Explain clearly with examples."
         )
 
@@ -191,13 +192,13 @@ if user_query:
             docs = vector_db.similarity_search(user_query, k=3)
             context = "\n\n".join([d.page_content for d in docs])
 
-            full_prompt = f"{system_prompt}\n\nContext:\n{context}\n\nQuestion: {user_query}"
+            prompt = f"{system_prompt}\n\nContext:\n{context}\n\nQuestion: {user_query}"
         else:
-            st.info("⚠️ Answering without notes...")
-            full_prompt = f"{system_prompt}\n\nQuestion: {user_query}"
+            st.info("⚠️ No notes loaded. Answering generally.")
+            prompt = f"{system_prompt}\n\nQuestion: {user_query}"
 
         try:
-            response = model.generate_content(full_prompt)
+            response = model.generate_content(prompt)
             answer = getattr(response, "text", "⚠️ No response generated.")
         except Exception as e:
             answer = f"❌ Error: {e}"
