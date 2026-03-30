@@ -36,15 +36,29 @@ if "GOOGLE_API_KEY" not in st.secrets:
 api_key = st.secrets["GOOGLE_API_KEY"]
 genai.configure(api_key=api_key)
 
-# ✅ WORKING MODEL (NO MORE 404 ERROR)
-model = genai.GenerativeModel("gemini-pro")
+# --- 6. AUTO MODEL DETECTION (FINAL FIX) ---
+def get_working_model():
+    try:
+        models = genai.list_models()
+        for m in models:
+            if "generateContent" in m.supported_generation_methods:
+                return genai.GenerativeModel(m.name)
+        return None
+    except Exception as e:
+        st.error(f"Model detection failed: {e}")
+        return None
 
-# --- 6. OCR FUNCTION (DISABLED SAFE VERSION) ---
+model = get_working_model()
+
+if model is None:
+    st.error("❌ No compatible Gemini model found. Check your API key.")
+    st.stop()
+
+# --- 7. OCR FUNCTION (DISABLED SAFE VERSION) ---
 def perform_ocr_on_pdf(pdf_path):
-    # Gemini Pro (v1beta) does not support file OCR → disable to avoid crash
     return ""
 
-# --- 7. LOAD KNOWLEDGE BASE ---
+# --- 8. LOAD KNOWLEDGE BASE ---
 @st.cache_resource(show_spinner=False)
 def load_knowledge_base(_api_key):
     db_dir = "./chroma_db_c"
@@ -63,9 +77,8 @@ def load_knowledge_base(_api_key):
 
             text = " ".join([d.page_content for d in docs])
 
-            # OCR fallback skipped (disabled)
             if len(text.strip()) < 100:
-                st.warning(f"⚠️ {pdf} may be scanned. OCR disabled.")
+                st.warning(f"⚠️ {pdf} may be scanned (OCR disabled).")
 
             all_text += text + "\n\n"
 
@@ -88,7 +101,6 @@ def load_knowledge_base(_api_key):
         google_api_key=_api_key
     )
 
-    # Clean DB safely
     if os.path.exists(db_dir):
         gc.collect()
         try:
@@ -104,7 +116,7 @@ def load_knowledge_base(_api_key):
 
     return vector_db, len(pdf_files)
 
-# --- 8. UI ---
+# --- 9. UI ---
 st.title("🌙 LUNA AI: C Programming Tutor")
 st.caption("KTU Engineering | AI & ML Department")
 
@@ -127,7 +139,7 @@ with st.sidebar:
     st.divider()
     st.caption("Developed by Abhay 🚀")
 
-# --- 9. CHAT SYSTEM ---
+# --- 10. CHAT SYSTEM ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -169,7 +181,7 @@ if user_query:
 
             prompt = f"{system_prompt}\n\nContext:\n{context}\n\nQuestion: {user_query}"
         else:
-            st.info("⚠️ Answering without notes (PDF empty or scanned).")
+            st.info("⚠️ Answering without notes.")
             prompt = f"{system_prompt}\n\nQuestion: {user_query}"
 
         try:
