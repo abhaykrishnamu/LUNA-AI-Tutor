@@ -1,13 +1,15 @@
-# --- 1. CORE IMPORTS (Streamlit must be first to prevent NameError) ---
+# --- 1. CORE IMPORTS ---
 import streamlit as st
 import os
 import shutil
 import random
+import time
+import sys
+import gc
 
-# --- 2. CHROMADB SQLITE FIX (Required for Streamlit Cloud environment) ---
+# --- 2. CHROMADB SQLITE FIX ---
 try:
     __import__("pysqlite3")
-    import sys
     sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
 except ImportError:
     pass
@@ -15,91 +17,132 @@ except ImportError:
 # --- 3. ADDITIONAL LIBRARIES ---
 import google.generativeai as genai
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import Chroma
 
 # --- 4. PAGE CONFIG ---
-st.set_page_config(page_title="LUNA AI - C Tutor", page_icon="🌙", layout="wide")
+st.set_page_config(
+    page_title="LUNA AI - C Tutor",
+    page_icon="🌙",
+    layout="wide"
+)
 
 # --- 5. API SETUP ---
 if "GOOGLE_API_KEY" not in st.secrets:
-    st.error("API key not found. Please add GOOGLE_API_KEY in Streamlit Secrets.")
+    st.error("❌ API key not found. Add GOOGLE_API_KEY in Streamlit Secrets.")
     st.stop()
 
 api_key = st.secrets["GOOGLE_API_KEY"]
 genai.configure(api_key=api_key)
-
-# FIX: Changing the model string to 'gemini-1.5-flash-latest' 
-# This usually bypasses the 404 error in the v1beta/generateContent endpoint.
 model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
-# --- 6. LOAD KNOWLEDGE BASE (RAG Logic) ---
+# --- 6. OCR FUNCTION (SAFE VERSION) ---
+def perform_ocr_on_pdf(pdf_path):
+    try:
+        if not hasattr(genai, "upload_file"):
+            return ""
+
+        sample_file = genai.upload_file(path=pdf_path)
+
+        max_wait = 30
+        waited = 0
+
+        while sample_file.state.name == "PROCESSING" and waited < max_wait:
+            time.sleep(2)
+            waited += 2
+            sample_file = genai.get_file(sample_file.name)
+
+        if waited >= max_wait:
+            return ""
+
+        response = model.generate_content([
+            sample_file,
+            "Extract all readable text clearly. Preserve code formatting."
+        ])
+
+        genai.delete_file(sample_file.name)
+
+        return getattr(response, "text", "")
+
+    except Exception as e:
+        st.warning(f"OCR failed for {pdf_path}: {e}")
+        return ""
+
+# --- 7. LOAD KNOWLEDGE BASE ---
 @st.cache_resource(show_spinner=False)
 def load_knowledge_base(_api_key):
     db_dir = "./chroma_db_c"
-    
-    # Looks for PDF notes in the root folder of your GitHub repo
-    pdf_files = [f for f in os.listdir(".") if f.lower().endswith('.pdf')]
-    
+
+    pdf_files = [f for f in os.listdir(".") if f.lower().endswith(".pdf")]
+
     if not pdf_files:
         return None, 0
 
-    all_docs = []
+    all_text = ""
+
     for pdf in pdf_files:
         try:
-            loader = PyPDFLoader(pdf)
-            all_docs.extend(loader.load())
-        except Exception:
-            continue 
+            loader = PyPDFLoader(os.path.join(".", pdf))
+            docs = loader.load()
 
-    if not all_docs:
+            text_content = " ".join([d.page_content for d in docs])
+
+            if len(text_content.strip()) < 100:
+                with st.spinner(f"🔍 OCR reading {pdf}..."):
+                    text_content = perform_ocr_on_pdf(pdf)
+
+            all_text += text_content + "\n\n"
+
+        except Exception as e:
+            st.warning(f"Error reading {pdf}: {e}")
+            continue
+
+    if not all_text.strip():
         return None, 0
 
-    # Split text into chunks for efficient searching
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-    chunks = splitter.split_documents(all_docs)
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1200,
+        chunk_overlap=200
+    )
+    chunks = splitter.split_text(all_text)
 
-    if not chunks:
-        return None, 0
-
-    # Create Embeddings using Google's latest model
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/text-embedding-004",
-        google_api_key=_api_key,
-        task_type="retrieval_document"
+        google_api_key=_api_key
     )
 
-    # Clear old database safely to prevent conflicts
+    # Clean old DB safely
     if os.path.exists(db_dir):
+        gc.collect()
         try:
             shutil.rmtree(db_dir)
-        except:
-            pass
+        except Exception as e:
+            st.warning(f"DB cleanup failed: {e}")
 
-    # Build Vector Database
-    vector_db = Chroma.from_documents(
-        documents=chunks,
+    vector_db = Chroma.from_texts(
+        texts=chunks,
         embedding=embeddings,
         persist_directory=db_dir
     )
 
     return vector_db, len(pdf_files)
 
-# --- 7. UI LAYOUT ---
+# --- 8. UI ---
 st.title("🌙 LUNA AI: C Programming Tutor")
 st.caption("KTU Engineering | AI & ML Department | Jai Bharath College")
 
-with st.spinner("LUNA is preparing your KTU notes..."):
+with st.spinner("📚 LUNA is analyzing your notes..."):
     vector_db, doc_count = load_knowledge_base(api_key)
 
-# --- 8. SIDEBAR ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("🌙 LUNA Settings")
+
     if vector_db:
-        st.success(f"📚 {doc_count} KTU Note(s) loaded.")
+        st.success(f"📚 {doc_count} PDF(s) loaded")
     else:
-        st.warning("No PDFs found. Upload your C notes to the GitHub root folder.")
+        st.warning("⚠️ No PDFs found")
 
     if st.button("🧹 Clear Chat"):
         st.session_state.messages = []
@@ -108,60 +151,61 @@ with st.sidebar:
     st.divider()
     st.caption("Developed by Abhay Krishna MU")
 
-# --- 9. CHAT SYSTEM WITH PERSONALITY ---
+# --- 9. CHAT SYSTEM ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
-    
-    # Professional & Witty Intro messages
-    intros = [
-        "👋 **Welcome, Scholar!** LUNA here. Ready to conquer C Programming? Remember: Coding is 10% writing and 90% wondering why it doesn't work. Let's get to work!",
-        "🌙 **LUNA Activated.** I've got your KTU notes ready. Don't worry about the exam; you've got this. Besides, 'C' is the only grade that's also a language!",
-        "🚀 **Hello!** I'm LUNA, your AI Tutor. Whether it's Pointers or Structures, we'll solve it together. Let's make this Semester count!",
-        "💻 **Systems Check: All Green.** Hello Abhay Krishna MU! Ready to debug your life? Just kidding—let's start with debugging some C code first."
-    ]
-    initial_msg = random.choice(intros)
-    st.session_state.messages.append({"role": "assistant", "content": initial_msg})
 
-# Display previous messages
+    intros = [
+        "👋 Welcome! I can read your notes—even scanned ones.",
+        "🌙 LUNA ready. Ask anything about C programming.",
+        "🚀 Let's study C with your KTU notes!"
+    ]
+
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": random.choice(intros)
+    })
+
+# Display chat
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
+# Input
 user_query = st.chat_input("Ask a C programming question...")
 
 if user_query:
     st.session_state.messages.append({"role": "user", "content": user_query})
+
     with st.chat_message("user"):
         st.markdown(user_query)
 
-    with st.spinner("LUNA is thinking..."):
-        # The Persona Prompt
+    with st.spinner("🤖 LUNA thinking..."):
+
         system_prompt = (
-            "You are LUNA, a professional, motivating, and slightly witty C tutor for KTU students (2024 Scheme). "
-            "1. Be encouraging and use a 'mentor' tone. "
-            "2. Use tech-related humor or puns where appropriate. "
-            "3. Provide clear C code blocks for all examples. "
-            "4. If the student seems stressed, give a quick motivational tip about their B.Tech journey. "
-            "5. Prioritize context from the uploaded KTU notes for syllabus accuracy."
+            "You are LUNA, a smart and friendly C programming tutor. "
+            "Explain clearly with examples."
         )
-        
+
         if vector_db:
             docs = vector_db.similarity_search(user_query, k=3)
             context = "\n\n".join([d.page_content for d in docs])
-            full_prompt = f"{system_prompt}\n\nContext from KTU Notes:\n{context}\n\nQuestion: {user_query}"
+
+            full_prompt = f"{system_prompt}\n\nContext:\n{context}\n\nQuestion: {user_query}"
         else:
+            st.info("⚠️ Answering without notes...")
             full_prompt = f"{system_prompt}\n\nQuestion: {user_query}"
-            
+
         try:
-            # Explicitly calling generate_content on the model instance
             response = model.generate_content(full_prompt)
-            if response.text:
-                answer = response.text
-            else:
-                answer = "LUNA is currently processing some background tasks. Can you ask that again?"
+            answer = getattr(response, "text", "⚠️ No response generated.")
         except Exception as e:
-            answer = f"LUNA hit a snag: {e}"
+            answer = f"❌ Error: {e}"
 
     with st.chat_message("assistant"):
         st.markdown(answer)
-    st.session_state.messages.append({"role": "assistant", "content": answer})
+
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": answer
+    })
