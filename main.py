@@ -1,9 +1,10 @@
-# --- 1. CORE IMPORTS (Streamlit must be first!) ---
+# --- 1. CORE IMPORTS (Streamlit must be first to prevent NameError) ---
 import streamlit as st
 import os
 import shutil
+import random
 
-# --- 2. CHROMADB SQLITE FIX (Required for Streamlit Cloud) ---
+# --- 2. CHROMADB SQLITE FIX (Required for Streamlit Cloud environment) ---
 try:
     __import__("pysqlite3")
     import sys
@@ -29,15 +30,15 @@ if "GOOGLE_API_KEY" not in st.secrets:
 api_key = st.secrets["GOOGLE_API_KEY"]
 genai.configure(api_key=api_key)
 
-# FIX: Using the full model path to prevent 404 errors
+# FIX: Using 'models/' prefix to ensure the 404 error is resolved
 model = genai.GenerativeModel("models/gemini-1.5-flash")
 
-# --- 6. LOAD KNOWLEDGE BASE ---
+# --- 6. LOAD KNOWLEDGE BASE (RAG Logic) ---
 @st.cache_resource(show_spinner=False)
 def load_knowledge_base(_api_key):
     db_dir = "./chroma_db_c"
     
-    # Finds PDF files in the root folder
+    # Looks for PDF notes in the root folder of your GitHub repo
     pdf_files = [f for f in os.listdir(".") if f.lower().endswith('.pdf')]
     
     if not pdf_files:
@@ -54,21 +55,21 @@ def load_knowledge_base(_api_key):
     if not all_docs:
         return None, 0
 
-    # Split text into chunks for RAG
+    # Split text into chunks for efficient searching
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
     chunks = splitter.split_documents(all_docs)
 
     if not chunks:
         return None, 0
 
-    # Create Embeddings
+    # Create Embeddings using Google's latest model
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/text-embedding-004",
         google_api_key=_api_key,
         task_type="retrieval_document"
     )
 
-    # Clear old database safely
+    # Clear old database safely to prevent conflicts
     if os.path.exists(db_dir):
         try:
             shutil.rmtree(db_dir)
@@ -106,9 +107,19 @@ with st.sidebar:
     st.divider()
     st.caption("Developed by Abhay Krishna MU")
 
-# --- 9. CHAT SYSTEM ---
+# --- 9. CHAT SYSTEM WITH PERSONALITY ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
+    
+    # Professional & Witty Intro messages
+    intros = [
+        "👋 **Welcome, Scholar!** LUNA here. Ready to conquer C Programming? Remember: Coding is 10% writing and 90% wondering why it doesn't work. Let's get to work!",
+        "🌙 **LUNA Activated.** I've got your KTU notes ready. Don't worry about the exam; you've got this. Besides, 'C' is the only grade that's also a language!",
+        "🚀 **Hello!** I'm LUNA, your AI Tutor. Whether it's Pointers or Structures, we'll solve it together. Let's make this Semester count!",
+        "💻 **Systems Check: All Green.** Hello Abhay Krishna MU! Ready to debug your life? Just kidding—let's start with debugging some C code first."
+    ]
+    initial_msg = random.choice(intros)
+    st.session_state.messages.append({"role": "assistant", "content": initial_msg})
 
 # Display previous messages
 for msg in st.session_state.messages:
@@ -123,11 +134,14 @@ if user_query:
         st.markdown(user_query)
 
     with st.spinner("LUNA is thinking..."):
-        # Specialized KTU Prompting
+        # The Persona Prompt
         system_prompt = (
-            "You are LUNA, an expert C tutor for KTU students (2024 Scheme). "
-            "Explain concepts simply and always provide code snippets in clean C blocks. "
-            "If context is provided from notes, prioritize that information for the answer."
+            "You are LUNA, a professional, motivating, and slightly witty C tutor for KTU students (2024 Scheme). "
+            "1. Be encouraging and use a 'mentor' tone. "
+            "2. Use tech-related humor or puns where appropriate. "
+            "3. Provide clear C code blocks for all examples. "
+            "4. If the student seems stressed, give a quick motivational tip about their B.Tech journey. "
+            "5. Prioritize context from the uploaded KTU notes for syllabus accuracy."
         )
         
         if vector_db:
@@ -142,9 +156,9 @@ if user_query:
             if response.text:
                 answer = response.text
             else:
-                answer = "LUNA is silent... try asking again."
+                answer = "LUNA is currently processing some background tasks. Can you ask that again?"
         except Exception as e:
-            answer = f"LUNA API Error: {e}"
+            answer = f"LUNA hit a snag: {e}"
 
     with st.chat_message("assistant"):
         st.markdown(answer)
