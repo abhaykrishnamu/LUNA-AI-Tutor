@@ -36,43 +36,13 @@ if "GOOGLE_API_KEY" not in st.secrets:
 api_key = st.secrets["GOOGLE_API_KEY"]
 genai.configure(api_key=api_key)
 
-# ✅ FIXED MODEL (NO MORE 404 ERROR)
-try:
-    model = genai.GenerativeModel("gemini-1.5-flash-001")
-except:
-    model = genai.GenerativeModel("gemini-1.5-flash")
+# ✅ WORKING MODEL (NO MORE 404 ERROR)
+model = genai.GenerativeModel("gemini-pro")
 
-# --- 6. OCR FUNCTION (SAFE) ---
+# --- 6. OCR FUNCTION (DISABLED SAFE VERSION) ---
 def perform_ocr_on_pdf(pdf_path):
-    try:
-        if not hasattr(genai, "upload_file"):
-            return ""
-
-        file = genai.upload_file(path=pdf_path)
-
-        max_wait = 30
-        waited = 0
-
-        while file.state.name == "PROCESSING" and waited < max_wait:
-            time.sleep(2)
-            waited += 2
-            file = genai.get_file(file.name)
-
-        if waited >= max_wait:
-            return ""
-
-        response = model.generate_content([
-            file,
-            "Extract all readable text clearly. Preserve code formatting."
-        ])
-
-        genai.delete_file(file.name)
-
-        return getattr(response, "text", "")
-
-    except Exception as e:
-        st.warning(f"OCR failed for {pdf_path}: {e}")
-        return ""
+    # Gemini Pro (v1beta) does not support file OCR → disable to avoid crash
+    return ""
 
 # --- 7. LOAD KNOWLEDGE BASE ---
 @st.cache_resource(show_spinner=False)
@@ -93,10 +63,9 @@ def load_knowledge_base(_api_key):
 
             text = " ".join([d.page_content for d in docs])
 
-            # OCR fallback for scanned PDFs
+            # OCR fallback skipped (disabled)
             if len(text.strip()) < 100:
-                with st.spinner(f"🔍 OCR reading {pdf}..."):
-                    text = perform_ocr_on_pdf(pdf)
+                st.warning(f"⚠️ {pdf} may be scanned. OCR disabled.")
 
             all_text += text + "\n\n"
 
@@ -149,7 +118,7 @@ with st.sidebar:
     if vector_db:
         st.success(f"📚 {doc_count} PDF(s) loaded")
     else:
-        st.warning("⚠️ No PDFs found")
+        st.warning("⚠️ No readable PDFs found")
 
     if st.button("🧹 Clear Chat"):
         st.session_state.messages = []
@@ -163,7 +132,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
     intros = [
-        "👋 Welcome! I can read your notes—even scanned ones.",
+        "👋 Welcome! I can read your notes.",
         "🌙 LUNA ready. Ask me anything about C programming.",
         "🚀 Let's master C together!"
     ]
@@ -200,7 +169,7 @@ if user_query:
 
             prompt = f"{system_prompt}\n\nContext:\n{context}\n\nQuestion: {user_query}"
         else:
-            st.info("⚠️ No notes loaded. Answering generally.")
+            st.info("⚠️ Answering without notes (PDF empty or scanned).")
             prompt = f"{system_prompt}\n\nQuestion: {user_query}"
 
         try:
