@@ -1,23 +1,3 @@
-# --- 1. CHROMADB SQLITE FIX ---
-try:
-    __import__("pysqlite3")
-    import sys
-    sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
-except ImportError:
-    pass
-
-import streamlit as st
-import google.generativeai as genai
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_community.vectorstores import Chroma
-import os
-import shutil
-
-# --- 2. PAGE CONFIG ---
-st.set_page_config(page_title="LUNA AI - C Tutor", page_icon="🌙", layout="wide")
-
 # --- 3. API SETUP ---
 if "GOOGLE_API_KEY" not in st.secrets:
     st.error("API key not found. Please add GOOGLE_API_KEY in Streamlit Secrets.")
@@ -25,87 +5,18 @@ if "GOOGLE_API_KEY" not in st.secrets:
 
 api_key = st.secrets["GOOGLE_API_KEY"]
 genai.configure(api_key=api_key)
-model = genai.GenerativeModel("gemini-1.5-flash")
 
-# --- 4. LOAD KNOWLEDGE BASE (SAFE ROOT FOLDER FIX) ---
-@st.cache_resource(show_spinner=False)
-def load_knowledge_base(_api_key):
-    db_dir = "./chroma_db_c"
-    
-    # 1. Safely find ONLY .pdf files in the main folder
-    pdf_files = [f for f in os.listdir(".") if f.lower().endswith('.pdf')]
-    
-    if not pdf_files:
-        return None, 0
+# FIX: Added 'models/' prefix which is often required by the newer SDK versions 
+# to avoid the 404 error you saw in the screenshot.
+model = genai.GenerativeModel("models/gemini-1.5-flash") 
 
-    # 2. Load documents one by one to catch corrupted files
-    all_docs = []
-    for pdf in pdf_files:
-        try:
-            loader = PyPDFLoader(pdf)
-            all_docs.extend(loader.load())
-        except Exception:
-            pass # Silently skip any broken PDFs so the app doesn't crash
-
-    # 3. Double check that we actually extracted text
-    if not all_docs:
-        return None, 0
-
-    # 4. Split text into chunks
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-    chunks = splitter.split_documents(all_docs)
-
-    # Prevent crashing if chunks end up empty
-    if not chunks:
-        return None, 0
-
-    # 5. Create Embeddings
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",
-        google_api_key=_api_key,
-        task_type="retrieval_document"
-    )
-
-    # 6. Clear old database safely
-    if os.path.exists(db_dir):
-        try: shutil.rmtree(db_dir)
-        except: pass
-
-    # 7. Build Vector Database
-    vector_db = Chroma.from_documents(
-        documents=chunks,
-        embedding=embeddings,
-        persist_directory=db_dir
-    )
-
-    return vector_db, len(pdf_files)
-
-# --- 5. UI SETUP ---
-st.title("🌙 LUNA AI: C Programming Tutor")
-st.caption("KTU Engineering | AI & ML Department | Jai Bharath College")
-
-with st.spinner("LUNA is safely reading your KTU notes..."):
-    vector_db, doc_count = load_knowledge_base(api_key)
-
-# --- 6. SIDEBAR ---
-with st.sidebar:
-    st.header("🌙 LUNA Settings")
-    if vector_db:
-        st.success(f"📚 {doc_count} PDF(s) loaded successfully.")
-    else:
-        st.warning("No valid PDFs found in the main folder. Please upload them to GitHub.")
-
-    if st.button("🧹 Clear Chat History"):
-        st.session_state.messages = []
-        st.rerun()
-
-    st.divider()
-    st.caption("Developed by Abhay Krishna MU")
+# ... [Keep your Section 4, 5, and 6 the same] ...
 
 # --- 7. CHAT LOGIC ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Display chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -114,25 +25,34 @@ user_query = st.chat_input("Ask a C programming question...")
 
 if user_query:
     st.session_state.messages.append({"role": "user", "content": user_query})
-    st.chat_message("user").markdown(user_query)
+    with st.chat_message("user"):
+        st.markdown(user_query)
 
     with st.spinner("LUNA is thinking..."):
-        system_prompt = "You are LUNA, an expert C tutor for KTU students. Use C code blocks for code snippets."
+        # Improved System Prompt for KTU Exams
+        system_prompt = (
+            "You are LUNA, an expert C tutor for KTU students (2024 Scheme). "
+            "Explain concepts simply and always provide code snippets in clean C blocks. "
+            "If context is provided from notes, prioritize that information."
+        )
         
         if vector_db:
-            # Search the PDFs
             docs = vector_db.similarity_search(user_query, k=3)
             context = "\n\n".join([d.page_content for d in docs])
-            full_prompt = f"{system_prompt}\n\nContext from Notes:\n{context}\n\nQuestion: {user_query}"
+            full_prompt = f"{system_prompt}\n\nContext from KTU Notes:\n{context}\n\nQuestion: {user_query}"
         else:
-            # Answer without PDFs if they aren't loaded yet
             full_prompt = f"{system_prompt}\n\nQuestion: {user_query}"
             
         try:
+            # FIX: Adding a safety check for the response
             response = model.generate_content(full_prompt)
-            answer = response.text
+            if response.text:
+                answer = response.text
+            else:
+                answer = "LUNA is having trouble generating a response. Please try rephrasing."
         except Exception as e:
-            answer = f"Oops, API Error: {e}"
+            # This will catch and explain any remaining API issues
+            answer = f"Oops, LUNA hit a snag: {e}"
 
     with st.chat_message("assistant"):
         st.markdown(answer)
