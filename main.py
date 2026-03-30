@@ -17,7 +17,7 @@ except ImportError:
 # --- 3. LIBRARIES ---
 import google.generativeai as genai
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter   # ✅ FIXED
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import Chroma
 
@@ -35,9 +35,14 @@ if "GOOGLE_API_KEY" not in st.secrets:
 
 api_key = st.secrets["GOOGLE_API_KEY"]
 genai.configure(api_key=api_key)
-model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
-# --- 6. OCR FUNCTION ---
+# ✅ FIXED MODEL (NO MORE 404 ERROR)
+try:
+    model = genai.GenerativeModel("gemini-1.5-flash-001")
+except:
+    model = genai.GenerativeModel("gemini-1.5-flash")
+
+# --- 6. OCR FUNCTION (SAFE) ---
 def perform_ocr_on_pdf(pdf_path):
     try:
         if not hasattr(genai, "upload_file"):
@@ -58,7 +63,7 @@ def perform_ocr_on_pdf(pdf_path):
 
         response = model.generate_content([
             file,
-            "Extract all readable text clearly. Preserve code."
+            "Extract all readable text clearly. Preserve code formatting."
         ])
 
         genai.delete_file(file.name)
@@ -88,6 +93,7 @@ def load_knowledge_base(_api_key):
 
             text = " ".join([d.page_content for d in docs])
 
+            # OCR fallback for scanned PDFs
             if len(text.strip()) < 100:
                 with st.spinner(f"🔍 OCR reading {pdf}..."):
                     text = perform_ocr_on_pdf(pdf)
@@ -113,7 +119,7 @@ def load_knowledge_base(_api_key):
         google_api_key=_api_key
     )
 
-    # Clean old DB safely
+    # Clean DB safely
     if os.path.exists(db_dir):
         gc.collect()
         try:
@@ -184,7 +190,7 @@ if user_query:
     with st.spinner("🤖 LUNA thinking..."):
 
         system_prompt = (
-            "You are LUNA, a smart C programming tutor. "
+            "You are LUNA, a smart and friendly C programming tutor. "
             "Explain clearly with examples."
         )
 
