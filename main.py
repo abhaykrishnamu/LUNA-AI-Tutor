@@ -30,8 +30,9 @@ if "GOOGLE_API_KEY" not in st.secrets:
 api_key = st.secrets["GOOGLE_API_KEY"]
 genai.configure(api_key=api_key)
 
-# FIX: Using 'models/' prefix to ensure the 404 error is resolved
-model = genai.GenerativeModel("models/gemini-1.5-flash")
+# FIX: Changing the model string to 'gemini-1.5-flash-latest' 
+# This usually bypasses the 404 error in the v1beta/generateContent endpoint.
+model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
 # --- 6. LOAD KNOWLEDGE BASE (RAG Logic) ---
 @st.cache_resource(show_spinner=False)
@@ -152,6 +153,7 @@ if user_query:
             full_prompt = f"{system_prompt}\n\nQuestion: {user_query}"
             
         try:
+            # Explicitly calling generate_content on the model instance
             response = model.generate_content(full_prompt)
             if response.text:
                 answer = response.text
