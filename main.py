@@ -46,7 +46,7 @@ def load_model():
 
 model = load_model()
 
-# --- 7. SYSTEM PROMPT (LUNA IDENTITY) ---
+# --- 7. LUNA SYSTEM PROMPT ---
 SYSTEM_PROMPT = """
 You are LUNA 🌙, a friendly and intelligent C programming tutor for KTU students.
 
@@ -58,12 +58,11 @@ Your purpose:
 Your personality:
 - Friendly, supportive, and patient
 - Speak like a teacher
-- Use simple explanations
 
 Rules:
-- Use examples when possible
-- Use bullet points for clarity
-- Focus on understanding, not memorization
+- Use examples
+- Use bullet points
+- Keep answers simple
 """
 
 # --- 8. OCR FUNCTION ---
@@ -83,7 +82,7 @@ def perform_ocr_on_pdf(pdf_path):
             time.sleep(2)
             file = genai.get_file(file.name)
 
-        response = model.generate_content([file, "Extract all readable text from this document."])
+        response = model.generate_content([file, "Extract all readable text"])
 
         return response.text if response else ""
 
@@ -117,7 +116,6 @@ def load_knowledge_base(api_key):
             docs = loader.load()
             text = " ".join([d.page_content for d in docs])
 
-            # If scanned → OCR
             if len(text.strip()) < 150:
                 st.warning(f"🔍 Using OCR for: {pdf}")
                 text = perform_ocr_on_pdf(pdf)
@@ -134,10 +132,7 @@ def load_knowledge_base(api_key):
         st.error("❌ No text extracted from PDFs")
         return None, 0
 
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=150
-    )
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
     chunks = splitter.split_text(all_text)
 
     if not chunks:
@@ -151,34 +146,32 @@ def load_knowledge_base(api_key):
     if os.path.exists(db_dir):
         shutil.rmtree(db_dir)
 
-    vector_db = Chroma.from_texts(
-        texts=chunks,
-        embedding=embeddings,
-        persist_directory=db_dir
-    )
+    vector_db = Chroma.from_texts(chunks, embeddings, persist_directory=db_dir)
 
     return vector_db, len(pdf_files)
 
 # --- 10. UI ---
 st.title("🌙 LUNA AI: C Programming Tutor")
-st.caption("KTU Engineering | AI Tutor")
+st.caption("KTU Engineering AI Tutor")
 
-# Load DB once
+# --- SAFE SESSION LOAD ---
 if "db_loaded" not in st.session_state:
     with st.spinner("📚 LUNA is reading your notes..."):
         vector_db, doc_count = load_knowledge_base(api_key)
-        st.session_state.vector_db = vector_db
-        st.session_state.doc_count = doc_count
-        st.session_state.db_loaded = True
-else:
-    vector_db = st.session_state.vector_db
-    doc_count = st.session_state.doc_count
 
-# Sidebar
+        st.session_state.vector_db = vector_db if vector_db else None
+        st.session_state.doc_count = doc_count if doc_count else 0
+        st.session_state.db_loaded = True
+
+# SAFE ACCESS
+vector_db = st.session_state.get("vector_db", None)
+doc_count = st.session_state.get("doc_count", 0)
+
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("🌙 LUNA Settings")
 
-    if vector_db:
+    if vector_db is not None:
         st.success(f"📚 {doc_count} PDF(s) loaded")
     else:
         st.warning("⚠️ No readable PDFs found")
@@ -187,18 +180,18 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
-# Chat memory
+# --- CHAT MEMORY ---
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "👋 Hi, I'm LUNA 🌙 — your C programming tutor. Ask me anything!"}
+        {"role": "assistant", "content": "👋 Hi, I'm LUNA 🌙 — your C programming tutor!"}
     ]
 
-# Display chat
+# --- DISPLAY CHAT ---
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Input
+# --- USER INPUT ---
 user_query = st.chat_input("Ask a C programming question...")
 
 if user_query:
@@ -220,7 +213,7 @@ if user_query:
 Context:
 {context}
 
-Student Question:
+Question:
 {user_query}
 
 Answer as LUNA:
@@ -229,7 +222,7 @@ Answer as LUNA:
                 prompt = f"""
 {SYSTEM_PROMPT}
 
-Student Question:
+Question:
 {user_query}
 
 Answer as LUNA:
@@ -239,7 +232,7 @@ Answer as LUNA:
                 response = model.generate_content(prompt)
                 answer = response.text if response else "⚠️ No response"
             else:
-                answer = "❌ AI model not available"
+                answer = "❌ Model not available"
 
         except Exception as e:
             answer = f"❌ Error: {e}"
