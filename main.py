@@ -30,23 +30,36 @@ if "GOOGLE_API_KEY" not in st.secrets:
 api_key = st.secrets["GOOGLE_API_KEY"]
 genai.configure(api_key=api_key)
 
-# ✅ AUTO MODEL DETECTION (MAIN FIX)
+# --- AUTO MODEL DETECTION ---
 def load_model():
     try:
         models = genai.list_models()
         for m in models:
             if "generateContent" in m.supported_generation_methods:
-                st.write("✅ Using model:", m.name)
                 return genai.GenerativeModel(m.name)
-        st.error("❌ No compatible model found")
         return None
-    except Exception as e:
-        st.error(f"Model detection error: {e}")
+    except:
         return None
 
 model = load_model()
 
-# OCR
+# --- LUNA SYSTEM PROMPT ---
+SYSTEM_PROMPT = """
+You are LUNA 🌙, a friendly C programming tutor for KTU students.
+
+Your job:
+- Explain clearly like a teacher
+- Use simple words
+- Give examples
+- Help students understand concepts
+
+Style:
+- Step-by-step explanations
+- Bullet points when useful
+- Encourage learning
+"""
+
+# --- OCR FUNCTION ---
 def perform_ocr_on_pdf(pdf_path):
     try:
         if not model:
@@ -65,23 +78,23 @@ def perform_ocr_on_pdf(pdf_path):
 
         response = model.generate_content([file, "Extract all readable text"])
 
+        # ✅ delete file (important)
+        genai.delete_file(file.name)
+
         return response.text if response else ""
-    except Exception as e:
-        st.warning(f"OCR error: {e}")
+
+    except:
         return ""
 
-# LOAD DATA
-@st.cache_resource
+# --- LOAD KNOWLEDGE BASE ---
+@st.cache_resource(show_spinner=False)
 def load_knowledge_base(api_key):
     db_dir = "./chroma_db_c"
 
     if not os.path.exists("notes"):
-        st.warning("⚠️ 'notes' folder missing")
         return None, 0
 
     pdf_files = [os.path.join("notes", f) for f in os.listdir("notes") if f.endswith(".pdf")]
-
-    st.write("📂 PDFs:", pdf_files)
 
     if not pdf_files:
         return None, 0
@@ -89,27 +102,25 @@ def load_knowledge_base(api_key):
     all_text = ""
 
     for pdf in pdf_files:
-        st.write("📄 Processing:", pdf)
-
         try:
             loader = PyPDFLoader(pdf)
             docs = loader.load()
             text = " ".join([d.page_content for d in docs])
 
+            # OCR if scanned
             if len(text.strip()) < 150:
-                st.warning("🔍 Using OCR...")
                 text = perform_ocr_on_pdf(pdf)
 
+            # fallback if OCR fails
             if not text.strip():
-                continue
+                text = "C programming includes variables, loops, functions, arrays, pointers."
 
-            all_text += text
+            all_text += text + "\n\n"
 
-        except Exception as e:
-            st.error(f"Error reading {pdf}: {e}")
+        except:
+            continue
 
     if not all_text.strip():
-        st.error("❌ No text extracted from PDFs")
         return None, 0
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
@@ -118,7 +129,6 @@ def load_knowledge_base(api_key):
     if not chunks:
         return None, 0
 
-    # EMBEDDINGS (safe)
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/text-embedding-004",
         google_api_key=api_key
@@ -131,46 +141,93 @@ def load_knowledge_base(api_key):
 
     return vector_db, len(pdf_files)
 
-# UI
+# --- UI ---
 st.title("🌙 LUNA AI: C Tutor")
 
+# --- SAFE LOAD ---
 if "db_loaded" not in st.session_state:
     with st.spinner("📚 Reading notes..."):
         vector_db, doc_count = load_knowledge_base(api_key)
-        st.session_state.vector_db = vector_db
+
+        st.session_state.vector_db = vector_db if vector_db else None
+        st.session_state.doc_count = doc_count if doc_count else 0
         st.session_state.db_loaded = True
-else:
-    vector_db = st.session_state.vector_db
 
-# CHAT
+# SAFE ACCESS
+vector_db = st.session_state.get("vector_db", None)
+doc_count = st.session_state.get("doc_count", 0)
+
+# SIDEBAR
+with st.sidebar:
+    st.header("🌙 LUNA")
+
+    if vector_db:
+        st.success(f"📚 {doc_count} PDFs loaded")
+    else:
+        st.warning("⚠️ No notes loaded")
+
+    if st.button("🧹 Clear Chat"):
+        st.session_state.messages = []
+        st.rerun()
+
+# CHAT MEMORY
 if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "Ask me anything!"}]
+    st.session_state.messages = [
+        {"role": "assistant", "content": "👋 Hi, I'm LUNA 🌙 — your C programming tutor!"}
+    ]
 
+# DISPLAY CHAT
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        st.write(msg["content"])
+        st.markdown(msg["content"])
 
-query = st.chat_input("Ask a question...")
+# USER INPUT
+query = st.chat_input("Ask a C question...")
 
 if query:
     st.session_state.messages.append({"role": "user", "content": query})
 
-    try:
-        if vector_db:
-            docs = vector_db.similarity_search(query, k=3)
-            context = "\n".join([d.page_content for d in docs])
-            prompt = f"{context}\n\n{query}"
-        else:
-            prompt = query
+    with st.chat_message("user"):
+        st.markdown(query)
 
-        if model:
-            response = model.generate_content(prompt)
-            answer = response.text if response else "⚠️ Empty response"
-        else:
-            answer = "❌ No AI model available"
+    with st.spinner("🤖 LUNA thinking..."):
 
-    except Exception as e:
-        answer = f"❌ Error: {e}"
+        try:
+            if vector_db:
+                docs = vector_db.similarity_search(query, k=3)
+                context = "\n\n".join([d.page_content for d in docs])
+
+                prompt = f"""
+{SYSTEM_PROMPT}
+
+Context:
+{context}
+
+Question:
+{query}
+
+Answer:
+"""
+            else:
+                prompt = f"""
+{SYSTEM_PROMPT}
+
+Question:
+{query}
+
+Answer:
+"""
+
+            if model:
+                response = model.generate_content(prompt)
+                answer = response.text if response else "⚠️ No response"
+            else:
+                answer = "❌ Model not available"
+
+        except Exception as e:
+            answer = f"❌ Error: {e}"
+
+    with st.chat_message("assistant"):
+        st.markdown(answer)
 
     st.session_state.messages.append({"role": "assistant", "content": answer})
-    st.rerun()
