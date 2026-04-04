@@ -1,28 +1,28 @@
-# --- IMPORTS ---
+# --- 1. IMPORTS ---
 import streamlit as st
 import os
 import shutil
 import sys
 import time
 
-# SQLITE FIX
+# --- 2. SQLITE FIX ---
 try:
     __import__("pysqlite3")
     sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
 except:
     pass
 
-# LIBRARIES
+# --- 3. LIBRARIES ---
 import google.generativeai as genai
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import Chroma
 
-# PAGE
-st.set_page_config(page_title="🌙 LUNA AI", layout="wide")
+# --- 4. PAGE CONFIG ---
+st.set_page_config(page_title="🌙 LUNA AI Tutor", layout="wide")
 
-# API
+# --- 5. API KEY ---
 if "GOOGLE_API_KEY" not in st.secrets:
     st.error("❌ Add GOOGLE_API_KEY in Streamlit Secrets")
     st.stop()
@@ -30,7 +30,7 @@ if "GOOGLE_API_KEY" not in st.secrets:
 api_key = st.secrets["GOOGLE_API_KEY"]
 genai.configure(api_key=api_key)
 
-# ✅ AUTO MODEL DETECTION (MAIN FIX)
+# --- 6. AUTO MODEL DETECTION ---
 def load_model():
     try:
         models = genai.list_models()
@@ -38,7 +38,7 @@ def load_model():
             if "generateContent" in m.supported_generation_methods:
                 st.write("✅ Using model:", m.name)
                 return genai.GenerativeModel(m.name)
-        st.error("❌ No compatible model found")
+        st.error("❌ No compatible Gemini model found")
         return None
     except Exception as e:
         st.error(f"Model detection error: {e}")
@@ -46,7 +46,27 @@ def load_model():
 
 model = load_model()
 
-# OCR
+# --- 7. SYSTEM PROMPT (LUNA IDENTITY) ---
+SYSTEM_PROMPT = """
+You are LUNA 🌙, a friendly and intelligent C programming tutor for KTU students.
+
+Your purpose:
+- Teach C programming clearly
+- Explain step-by-step
+- Help students understand concepts easily
+
+Your personality:
+- Friendly, supportive, and patient
+- Speak like a teacher
+- Use simple explanations
+
+Rules:
+- Use examples when possible
+- Use bullet points for clarity
+- Focus on understanding, not memorization
+"""
+
+# --- 8. OCR FUNCTION ---
 def perform_ocr_on_pdf(pdf_path):
     try:
         if not model:
@@ -63,25 +83,26 @@ def perform_ocr_on_pdf(pdf_path):
             time.sleep(2)
             file = genai.get_file(file.name)
 
-        response = model.generate_content([file, "Extract all readable text"])
+        response = model.generate_content([file, "Extract all readable text from this document."])
 
         return response.text if response else ""
+
     except Exception as e:
         st.warning(f"OCR error: {e}")
         return ""
 
-# LOAD DATA
-@st.cache_resource
+# --- 9. LOAD KNOWLEDGE BASE ---
+@st.cache_resource(show_spinner=False)
 def load_knowledge_base(api_key):
     db_dir = "./chroma_db_c"
 
     if not os.path.exists("notes"):
-        st.warning("⚠️ 'notes' folder missing")
+        st.warning("⚠️ 'notes' folder not found")
         return None, 0
 
     pdf_files = [os.path.join("notes", f) for f in os.listdir("notes") if f.endswith(".pdf")]
 
-    st.write("📂 PDFs:", pdf_files)
+    st.write("📂 PDFs found:", pdf_files)
 
     if not pdf_files:
         return None, 0
@@ -89,21 +110,22 @@ def load_knowledge_base(api_key):
     all_text = ""
 
     for pdf in pdf_files:
-        st.write("📄 Processing:", pdf)
+        st.write(f"📄 Processing: {pdf}")
 
         try:
             loader = PyPDFLoader(pdf)
             docs = loader.load()
             text = " ".join([d.page_content for d in docs])
 
+            # If scanned → OCR
             if len(text.strip()) < 150:
-                st.warning("🔍 Using OCR...")
+                st.warning(f"🔍 Using OCR for: {pdf}")
                 text = perform_ocr_on_pdf(pdf)
 
             if not text.strip():
                 continue
 
-            all_text += text
+            all_text += text + "\n\n"
 
         except Exception as e:
             st.error(f"Error reading {pdf}: {e}")
@@ -112,13 +134,15 @@ def load_knowledge_base(api_key):
         st.error("❌ No text extracted from PDFs")
         return None, 0
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=150
+    )
     chunks = splitter.split_text(all_text)
 
     if not chunks:
         return None, 0
 
-    # EMBEDDINGS (safe)
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/text-embedding-004",
         google_api_key=api_key
@@ -127,50 +151,100 @@ def load_knowledge_base(api_key):
     if os.path.exists(db_dir):
         shutil.rmtree(db_dir)
 
-    vector_db = Chroma.from_texts(chunks, embeddings, persist_directory=db_dir)
+    vector_db = Chroma.from_texts(
+        texts=chunks,
+        embedding=embeddings,
+        persist_directory=db_dir
+    )
 
     return vector_db, len(pdf_files)
 
-# UI
-st.title("🌙 LUNA AI: C Tutor")
+# --- 10. UI ---
+st.title("🌙 LUNA AI: C Programming Tutor")
+st.caption("KTU Engineering | AI Tutor")
 
+# Load DB once
 if "db_loaded" not in st.session_state:
-    with st.spinner("📚 Reading notes..."):
+    with st.spinner("📚 LUNA is reading your notes..."):
         vector_db, doc_count = load_knowledge_base(api_key)
         st.session_state.vector_db = vector_db
+        st.session_state.doc_count = doc_count
         st.session_state.db_loaded = True
 else:
     vector_db = st.session_state.vector_db
+    doc_count = st.session_state.doc_count
 
-# CHAT
+# Sidebar
+with st.sidebar:
+    st.header("🌙 LUNA Settings")
+
+    if vector_db:
+        st.success(f"📚 {doc_count} PDF(s) loaded")
+    else:
+        st.warning("⚠️ No readable PDFs found")
+
+    if st.button("🧹 Clear Chat"):
+        st.session_state.messages = []
+        st.rerun()
+
+# Chat memory
 if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "Ask me anything!"}]
+    st.session_state.messages = [
+        {"role": "assistant", "content": "👋 Hi, I'm LUNA 🌙 — your C programming tutor. Ask me anything!"}
+    ]
 
+# Display chat
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        st.write(msg["content"])
+        st.markdown(msg["content"])
 
-query = st.chat_input("Ask a question...")
+# Input
+user_query = st.chat_input("Ask a C programming question...")
 
-if query:
-    st.session_state.messages.append({"role": "user", "content": query})
+if user_query:
+    st.session_state.messages.append({"role": "user", "content": user_query})
 
-    try:
-        if vector_db:
-            docs = vector_db.similarity_search(query, k=3)
-            context = "\n".join([d.page_content for d in docs])
-            prompt = f"{context}\n\n{query}"
-        else:
-            prompt = query
+    with st.chat_message("user"):
+        st.markdown(user_query)
 
-        if model:
-            response = model.generate_content(prompt)
-            answer = response.text if response else "⚠️ Empty response"
-        else:
-            answer = "❌ No AI model available"
+    with st.spinner("🤖 LUNA thinking..."):
 
-    except Exception as e:
-        answer = f"❌ Error: {e}"
+        try:
+            if vector_db:
+                docs = vector_db.similarity_search(user_query, k=3)
+                context = "\n\n".join([d.page_content for d in docs])
+
+                prompt = f"""
+{SYSTEM_PROMPT}
+
+Context:
+{context}
+
+Student Question:
+{user_query}
+
+Answer as LUNA:
+"""
+            else:
+                prompt = f"""
+{SYSTEM_PROMPT}
+
+Student Question:
+{user_query}
+
+Answer as LUNA:
+"""
+
+            if model:
+                response = model.generate_content(prompt)
+                answer = response.text if response else "⚠️ No response"
+            else:
+                answer = "❌ AI model not available"
+
+        except Exception as e:
+            answer = f"❌ Error: {e}"
+
+    with st.chat_message("assistant"):
+        st.markdown(answer)
 
     st.session_state.messages.append({"role": "assistant", "content": answer})
-    st.rerun()
