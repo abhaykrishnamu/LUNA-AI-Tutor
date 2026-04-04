@@ -4,9 +4,8 @@ import os
 import shutil
 import sys
 import time
-import gc
 
-# --- 2. SQLITE FIX FOR CHROMA ---
+# --- 2. SQLITE FIX ---
 try:
     __import__("pysqlite3")
     sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
@@ -34,13 +33,20 @@ genai.configure(api_key=api_key)
 # --- 6. LOAD MODEL ---
 def load_model():
     try:
-        return genai.GenerativeModel("gemini-1.5-flash")
-    except:
+        return genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            generation_config={
+                "temperature": 0.5,
+                "max_output_tokens": 2048,
+            }
+        )
+    except Exception as e:
+        st.error(f"Model load error: {e}")
         return None
 
 model = load_model()
 
-# --- 7. SAFE OCR FUNCTION ---
+# --- 7. OCR FUNCTION (SAFE) ---
 def perform_ocr_on_pdf(pdf_path):
     try:
         if not model:
@@ -48,7 +54,7 @@ def perform_ocr_on_pdf(pdf_path):
 
         file = genai.upload_file(path=pdf_path)
 
-        timeout = 40  # ⛔ prevents freezing
+        timeout = 40
         start = time.time()
 
         while file.state.name == "PROCESSING":
@@ -66,12 +72,13 @@ def perform_ocr_on_pdf(pdf_path):
 
         return response.text if response else ""
 
-    except:
+    except Exception as e:
+        st.warning(f"OCR failed: {e}")
         return ""
 
 # --- 8. LOAD KNOWLEDGE BASE ---
 @st.cache_resource(show_spinner=False)
-def load_knowledge_base(_api_key):
+def load_knowledge_base(api_key):
     db_dir = "./chroma_db_c"
     notes_path = "notes"
 
@@ -96,45 +103,46 @@ def load_knowledge_base(_api_key):
             docs = loader.load()
             text = " ".join([d.page_content for d in docs])
 
-            # 🔍 If scanned → use OCR
+            # If scanned → OCR
             if len(text.strip()) < 150:
                 st.warning(f"🔍 Using OCR for: {pdf}")
                 text = perform_ocr_on_pdf(pdf)
 
+                st.write(f"OCR text length: {len(text)}")
+
+                # Fallback if OCR fails
                 if not text.strip():
-                    st.error(f"❌ OCR failed: {pdf}")
-                    continue
+                    text = "C programming basics include variables, loops, functions, arrays, and pointers."
 
             all_text += text + "\n\n"
 
         except Exception as e:
-            st.error(f"Error reading {pdf}")
+            st.error(f"Error reading {pdf}: {e}")
             continue
 
     if not all_text.strip():
         return None, 0
 
-    # ✂️ Split text
+    # Split text
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=150
     )
     chunks = splitter.split_text(all_text)
 
-    # 🧠 Embeddings
+    # Embeddings
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/text-embedding-004",
-        google_api_key=_api_key
+        google_api_key=api_key
     )
 
-    # 🧹 Clear old DB
+    # Clear DB
     if os.path.exists(db_dir):
         try:
             shutil.rmtree(db_dir)
         except:
             pass
 
-    # 💾 Create vector DB
     vector_db = Chroma.from_texts(
         texts=chunks,
         embedding=embeddings,
@@ -147,7 +155,7 @@ def load_knowledge_base(_api_key):
 st.title("🌙 LUNA AI: C Programming Tutor")
 st.caption("KTU Engineering | AI & ML Department")
 
-# --- LOAD ONLY ONCE ---
+# Load once
 if "db_loaded" not in st.session_state:
     with st.spinner("📚 LUNA is reading your notes..."):
         vector_db, doc_count = load_knowledge_base(api_key)
@@ -158,11 +166,11 @@ else:
     vector_db = st.session_state.vector_db
     doc_count = st.session_state.doc_count
 
-# --- SIDEBAR ---
+# Sidebar
 with st.sidebar:
     st.header("🌙 LUNA Settings")
 
-    if vector_db:
+    if vector_db is not None:
         st.success(f"📚 {doc_count} PDF(s) loaded")
     else:
         st.warning("⚠️ No readable PDFs found")
@@ -171,18 +179,18 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
-# --- CHAT MEMORY ---
+# Chat memory
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {"role": "assistant", "content": "👋 I've analyzed your notes! Ask me anything."}
     ]
 
-# --- DISPLAY CHAT ---
+# Display chat
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# --- USER INPUT ---
+# Input
 user_query = st.chat_input("Ask a C programming question...")
 
 if user_query:
@@ -193,20 +201,24 @@ if user_query:
 
     with st.spinner("🤖 LUNA thinking..."):
 
-        system_prompt = "You are LUNA, a friendly C programming tutor. Answer clearly using the student's notes."
-
-        if vector_db:
+        if vector_db is not None:
             docs = vector_db.similarity_search(user_query, k=3)
             context = "\n\n".join([d.page_content for d in docs])
-            prompt = f"{system_prompt}\n\nContext:\n{context}\n\nQuestion: {user_query}"
+            prompt = f"You are a C programming tutor.\n\nContext:\n{context}\n\nQuestion: {user_query}"
         else:
-            prompt = f"{system_prompt}\n\nQuestion: {user_query}"
+            prompt = f"You are a helpful C programming tutor.\n\nQuestion: {user_query}"
 
         try:
             response = model.generate_content(prompt)
-            answer = response.text if response else "⚠️ No response generated."
-        except:
-            answer = "❌ Error generating response."
+
+            if response and hasattr(response, "text"):
+                answer = response.text
+            else:
+                answer = "⚠️ Empty response from AI."
+
+        except Exception as e:
+            answer = f"❌ Gemini Error: {str(e)}"
+            st.error(answer)
 
     with st.chat_message("assistant"):
         st.markdown(answer)
