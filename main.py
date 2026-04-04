@@ -1,28 +1,28 @@
-# --- IMPORTS ---
+# --- 1. IMPORTS ---
 import streamlit as st
 import os
 import shutil
 import sys
 import time
 
-# SQLITE FIX
+# --- 2. SQLITE FIX ---
 try:
     __import__("pysqlite3")
     sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
 except:
     pass
 
-# LIBRARIES
+# --- 3. LIBRARIES ---
 import google.generativeai as genai
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings   # ✅ FIXED
 from langchain_community.vectorstores import Chroma
 
-# PAGE
-st.set_page_config(page_title="🌙 LUNA AI", layout="wide")
+# --- 4. PAGE CONFIG ---
+st.set_page_config(page_title="🌙 LUNA AI Tutor", layout="wide")
 
-# API
+# --- 5. API KEY ---
 if "GOOGLE_API_KEY" not in st.secrets:
     st.error("❌ Add GOOGLE_API_KEY in Streamlit Secrets")
     st.stop()
@@ -30,7 +30,7 @@ if "GOOGLE_API_KEY" not in st.secrets:
 api_key = st.secrets["GOOGLE_API_KEY"]
 genai.configure(api_key=api_key)
 
-# --- AUTO MODEL DETECTION ---
+# --- 6. AUTO MODEL DETECTION ---
 def load_model():
     try:
         models = genai.list_models()
@@ -43,23 +43,22 @@ def load_model():
 
 model = load_model()
 
-# --- LUNA SYSTEM PROMPT ---
+# --- 7. LUNA SYSTEM PROMPT ---
 SYSTEM_PROMPT = """
-You are LUNA 🌙, a friendly C programming tutor for KTU students.
+You are LUNA 🌙, a friendly and intelligent C programming tutor.
 
 Your job:
-- Explain clearly like a teacher
-- Use simple words
+- Explain concepts step-by-step
+- Use simple language
 - Give examples
-- Help students understand concepts
 
 Style:
-- Step-by-step explanations
-- Bullet points when useful
-- Encourage learning
+- Friendly teacher
+- Use bullet points
+- Help understanding
 """
 
-# --- OCR FUNCTION ---
+# --- 8. OCR FUNCTION ---
 def perform_ocr_on_pdf(pdf_path):
     try:
         if not model:
@@ -78,7 +77,6 @@ def perform_ocr_on_pdf(pdf_path):
 
         response = model.generate_content([file, "Extract all readable text"])
 
-        # ✅ delete file (important)
         genai.delete_file(file.name)
 
         return response.text if response else ""
@@ -86,9 +84,9 @@ def perform_ocr_on_pdf(pdf_path):
     except:
         return ""
 
-# --- LOAD KNOWLEDGE BASE ---
+# --- 9. LOAD KNOWLEDGE BASE ---
 @st.cache_resource(show_spinner=False)
-def load_knowledge_base(api_key):
+def load_knowledge_base():
     db_dir = "./chroma_db_c"
 
     if not os.path.exists("notes"):
@@ -111,9 +109,9 @@ def load_knowledge_base(api_key):
             if len(text.strip()) < 150:
                 text = perform_ocr_on_pdf(pdf)
 
-            # fallback if OCR fails
+            # fallback
             if not text.strip():
-                text = "C programming includes variables, loops, functions, arrays, pointers."
+                text = "C programming basics include variables, loops, arrays, functions."
 
             all_text += text + "\n\n"
 
@@ -129,31 +127,34 @@ def load_knowledge_base(api_key):
     if not chunks:
         return None, 0
 
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",
-        google_api_key=api_key
+    # ✅ LOCAL EMBEDDINGS (NO ERROR)
+    embeddings = HuggingFaceEmbeddings(
+        model_name="all-MiniLM-L6-v2"
     )
 
     if os.path.exists(db_dir):
         shutil.rmtree(db_dir)
 
-    vector_db = Chroma.from_texts(chunks, embeddings, persist_directory=db_dir)
+    vector_db = Chroma.from_texts(
+        texts=chunks,
+        embedding=embeddings,
+        persist_directory=db_dir
+    )
 
     return vector_db, len(pdf_files)
 
-# --- UI ---
-st.title("🌙 LUNA AI: C Tutor")
+# --- 10. UI ---
+st.title("🌙 LUNA AI: C Programming Tutor")
 
-# --- SAFE LOAD ---
+# SAFE LOAD
 if "db_loaded" not in st.session_state:
     with st.spinner("📚 Reading notes..."):
-        vector_db, doc_count = load_knowledge_base(api_key)
+        vector_db, doc_count = load_knowledge_base()
 
         st.session_state.vector_db = vector_db if vector_db else None
         st.session_state.doc_count = doc_count if doc_count else 0
         st.session_state.db_loaded = True
 
-# SAFE ACCESS
 vector_db = st.session_state.get("vector_db", None)
 doc_count = st.session_state.get("doc_count", 0)
 
@@ -182,7 +183,7 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
 
 # USER INPUT
-query = st.chat_input("Ask a C question...")
+query = st.chat_input("Ask a C programming question...")
 
 if query:
     st.session_state.messages.append({"role": "user", "content": query})
