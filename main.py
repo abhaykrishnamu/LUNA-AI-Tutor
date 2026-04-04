@@ -3,6 +3,7 @@ import streamlit as st
 import os
 import shutil
 import sys
+import time
 import gc
 
 # --- 2. SQLITE FIX FOR CHROMA ---
@@ -24,12 +25,13 @@ st.set_page_config(page_title="🌙 LUNA AI - C Tutor", layout="wide")
 
 # --- 5. API SETUP ---
 if "GOOGLE_API_KEY" not in st.secrets:
-    st.error("❌ Please add GOOGLE_API_KEY in Streamlit Secrets")
+    st.error("❌ Add GOOGLE_API_KEY in Streamlit Secrets")
     st.stop()
 
-genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+api_key = st.secrets["GOOGLE_API_KEY"]
+genai.configure(api_key=api_key)
 
-# --- 6. LOAD MODEL (STABLE) ---
+# --- 6. LOAD MODEL ---
 def load_model():
     try:
         return genai.GenerativeModel("gemini-1.5-flash")
@@ -38,17 +40,48 @@ def load_model():
 
 model = load_model()
 
-# --- 7. LOAD KNOWLEDGE BASE (NO OCR, FAST) ---
-@st.cache_resource(show_spinner=False)
-def load_knowledge_base(api_key):
-    db_dir = "./chroma_db_c"
+# --- 7. SAFE OCR FUNCTION ---
+def perform_ocr_on_pdf(pdf_path):
+    try:
+        if not model:
+            return ""
 
-    # 📂 Load PDFs ONLY from "notes" folder
+        file = genai.upload_file(path=pdf_path)
+
+        timeout = 40  # ⛔ prevents freezing
+        start = time.time()
+
+        while file.state.name == "PROCESSING":
+            if time.time() - start > timeout:
+                return ""
+            time.sleep(2)
+            file = genai.get_file(file.name)
+
+        response = model.generate_content([
+            file,
+            "Extract all readable text and code from this document."
+        ])
+
+        genai.delete_file(file.name)
+
+        return response.text if response else ""
+
+    except:
+        return ""
+
+# --- 8. LOAD KNOWLEDGE BASE ---
+@st.cache_resource(show_spinner=False)
+def load_knowledge_base(_api_key):
+    db_dir = "./chroma_db_c"
     notes_path = "notes"
+
     if not os.path.exists(notes_path):
+        st.warning("⚠️ 'notes' folder not found")
         return None, 0
 
     pdf_files = [os.path.join(notes_path, f) for f in os.listdir(notes_path) if f.endswith(".pdf")]
+
+    st.write("📂 PDFs found:", pdf_files)
 
     if not pdf_files:
         return None, 0
@@ -56,21 +89,26 @@ def load_knowledge_base(api_key):
     all_text = ""
 
     for pdf in pdf_files:
+        st.write(f"📄 Processing: {pdf}")
+
         try:
             loader = PyPDFLoader(pdf)
             docs = loader.load()
-
             text = " ".join([d.page_content for d in docs])
 
-            # 🚫 Skip scanned PDFs (no OCR)
+            # 🔍 If scanned → use OCR
             if len(text.strip()) < 150:
-                st.warning(f"⚠️ Skipping scanned PDF: {pdf}")
-                continue
+                st.warning(f"🔍 Using OCR for: {pdf}")
+                text = perform_ocr_on_pdf(pdf)
+
+                if not text.strip():
+                    st.error(f"❌ OCR failed: {pdf}")
+                    continue
 
             all_text += text + "\n\n"
 
         except Exception as e:
-            st.warning(f"Error reading {pdf}")
+            st.error(f"Error reading {pdf}")
             continue
 
     if not all_text.strip():
@@ -86,17 +124,17 @@ def load_knowledge_base(api_key):
     # 🧠 Embeddings
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/text-embedding-004",
-        google_api_key=api_key
+        google_api_key=_api_key
     )
 
-    # 🧹 Clean old DB
+    # 🧹 Clear old DB
     if os.path.exists(db_dir):
         try:
             shutil.rmtree(db_dir)
         except:
             pass
 
-    # 💾 Create DB
+    # 💾 Create vector DB
     vector_db = Chroma.from_texts(
         texts=chunks,
         embedding=embeddings,
@@ -105,14 +143,14 @@ def load_knowledge_base(api_key):
 
     return vector_db, len(pdf_files)
 
-# --- 8. UI ---
+# --- 9. UI ---
 st.title("🌙 LUNA AI: C Programming Tutor")
 st.caption("KTU Engineering | AI & ML Department")
 
 # --- LOAD ONLY ONCE ---
 if "db_loaded" not in st.session_state:
     with st.spinner("📚 LUNA is reading your notes..."):
-        vector_db, doc_count = load_knowledge_base(st.secrets["GOOGLE_API_KEY"])
+        vector_db, doc_count = load_knowledge_base(api_key)
         st.session_state.vector_db = vector_db
         st.session_state.doc_count = doc_count
         st.session_state.db_loaded = True
@@ -136,7 +174,7 @@ with st.sidebar:
 # --- CHAT MEMORY ---
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "👋 I've analyzed your notes! Ask me anything from your syllabus."}
+        {"role": "assistant", "content": "👋 I've analyzed your notes! Ask me anything."}
     ]
 
 # --- DISPLAY CHAT ---
@@ -155,12 +193,11 @@ if user_query:
 
     with st.spinner("🤖 LUNA thinking..."):
 
-        system_prompt = "You are LUNA, a friendly C programming tutor. Answer clearly based on student's notes."
+        system_prompt = "You are LUNA, a friendly C programming tutor. Answer clearly using the student's notes."
 
         if vector_db:
             docs = vector_db.similarity_search(user_query, k=3)
             context = "\n\n".join([d.page_content for d in docs])
-
             prompt = f"{system_prompt}\n\nContext:\n{context}\n\nQuestion: {user_query}"
         else:
             prompt = f"{system_prompt}\n\nQuestion: {user_query}"
@@ -168,8 +205,8 @@ if user_query:
         try:
             response = model.generate_content(prompt)
             answer = response.text if response else "⚠️ No response generated."
-        except Exception as e:
-            answer = "❌ Error generating response. Please try again."
+        except:
+            answer = "❌ Error generating response."
 
     with st.chat_message("assistant"):
         st.markdown(answer)
