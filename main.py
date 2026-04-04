@@ -24,18 +24,34 @@ st.set_page_config(page_title="🌙 LUNA AI", layout="wide")
 
 # API
 if "GOOGLE_API_KEY" not in st.secrets:
-    st.error("Add GOOGLE_API_KEY")
+    st.error("❌ Add GOOGLE_API_KEY in Streamlit Secrets")
     st.stop()
 
 api_key = st.secrets["GOOGLE_API_KEY"]
 genai.configure(api_key=api_key)
 
-# ✅ FIXED MODEL
-model = genai.GenerativeModel("gemini-1.5-flash-latest")
+# ✅ AUTO MODEL DETECTION (MAIN FIX)
+def load_model():
+    try:
+        models = genai.list_models()
+        for m in models:
+            if "generateContent" in m.supported_generation_methods:
+                st.write("✅ Using model:", m.name)
+                return genai.GenerativeModel(m.name)
+        st.error("❌ No compatible model found")
+        return None
+    except Exception as e:
+        st.error(f"Model detection error: {e}")
+        return None
+
+model = load_model()
 
 # OCR
 def perform_ocr_on_pdf(pdf_path):
     try:
+        if not model:
+            return ""
+
         file = genai.upload_file(path=pdf_path)
 
         timeout = 30
@@ -47,7 +63,7 @@ def perform_ocr_on_pdf(pdf_path):
             time.sleep(2)
             file = genai.get_file(file.name)
 
-        response = model.generate_content([file, "Extract all text"])
+        response = model.generate_content([file, "Extract all readable text"])
 
         return response.text if response else ""
     except Exception as e:
@@ -60,11 +76,15 @@ def load_knowledge_base(api_key):
     db_dir = "./chroma_db_c"
 
     if not os.path.exists("notes"):
+        st.warning("⚠️ 'notes' folder missing")
         return None, 0
 
     pdf_files = [os.path.join("notes", f) for f in os.listdir("notes") if f.endswith(".pdf")]
 
     st.write("📂 PDFs:", pdf_files)
+
+    if not pdf_files:
+        return None, 0
 
     all_text = ""
 
@@ -86,9 +106,10 @@ def load_knowledge_base(api_key):
             all_text += text
 
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Error reading {pdf}: {e}")
 
     if not all_text.strip():
+        st.error("❌ No text extracted from PDFs")
         return None, 0
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
@@ -97,7 +118,7 @@ def load_knowledge_base(api_key):
     if not chunks:
         return None, 0
 
-    # ✅ FIXED EMBEDDINGS
+    # EMBEDDINGS (safe)
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/text-embedding-004",
         google_api_key=api_key
@@ -142,8 +163,11 @@ if query:
         else:
             prompt = query
 
-        response = model.generate_content(prompt)
-        answer = response.text
+        if model:
+            response = model.generate_content(prompt)
+            answer = response.text if response else "⚠️ Empty response"
+        else:
+            answer = "❌ No AI model available"
 
     except Exception as e:
         answer = f"❌ Error: {e}"
